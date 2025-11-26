@@ -1,11 +1,10 @@
 # Angry Santa GPU Snowball Simulation
 
-We are approaching the Christmas season, and Santa Claus is getting tired and angry because his elves team is behind schedule. In a moment of pure frustration, he decides to destroy the entire village with a gigantic rolling snowball.
+We are approaching the Christmas season and Santa Claus is getting tired and angry because his elves team is behind schedule. In a moment of pure frustration, he decides to destroy the entire village with a gigantic rolling snowball.
 
 So… let’s simulate this physical phenomenon.
 
-In the project, we model the motion of a rigid body (for simplicity, approximated as a perfect sphere) with variable mass sliding down an inclined plane under Newtonian dynamics.  
-The interesting part is the varying mass: the snowball grows over time, and this behavior can be efficiently simulated through GPU parallelism.
+In the project, we model the motion of a rigid body (for simplicity, approximated as a perfect sphere) with variable mass sliding down an inclined plane under Newtonian dynamics. The interesting part is the varying mass: the snowball grows over time, and this behavior can be efficiently simulated through GPU parallelism.
 
 ## System Overview
 
