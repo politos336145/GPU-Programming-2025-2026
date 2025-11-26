@@ -1,4 +1,4 @@
-# Angry Santa GPU Snowball Simulation
+# Angry Santa: a GPU Snowball Simulation
 
 We are approaching the Christmas season and Santa Claus is getting tired and angry because his elves team is behind schedule. In a moment of pure frustration, he decides to destroy the entire village with a gigantic rolling snowball.
 
