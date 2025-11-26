@@ -4,6 +4,10 @@ We are approaching the Christmas season and Santa Claus is getting tired and ang
 
 So… let’s simulate this physical phenomenon.
 
+![Physics 1](./Physics%201.png)
+![Physics 2](./Physics%202.png)
+
+
 In the project, we model the motion of a rigid body (for simplicity, approximated as a perfect sphere) with variable mass sliding down an inclined plane under Newtonian dynamics. The interesting part is the varying mass: the snowball grows over time, and this behavior can be efficiently simulated through GPU parallelism.
 
 ## System Overview
