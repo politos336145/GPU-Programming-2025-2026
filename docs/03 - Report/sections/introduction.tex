@@ -1,0 +1,62 @@
+% !TEX root = ../paper.tex
+\section{Introduction}
+\label{sec:introduction}
+
+Granular-material simulations are central to computational physics and
+engineering, with applications ranging from geotechnical hazard prediction to
+visual effects in games and films. The \emph{Discrete Element Method}
+(DEM)~\cite{cundall1979} models granular media as collections of individual
+particles interacting through pairwise contact forces, providing a physically
+faithful representation of phenomena such as avalanches, landslides, and
+snowfall accumulation. However, DEM simulations are computationally demanding:
+at each timestep every particle must detect contacts with its neighbours and
+resolve penalty-based forces, yielding an $O(N \cdot k)$ cost per frame (where
+$k$ is the average neighbour count) that quickly exceeds the real-time budget of
+a single CPU core.
+
+Graphics Processing Units (GPUs), with their thousands of lightweight cores and
+high-bandwidth memory, are a natural fit for DEM workloads. Each particle can
+be mapped to an independent CUDA thread, and the Structure-of-Arrays (SoA)
+memory layout ensures coalesced global-memory transactions. Several works have
+demonstrated GPU-accelerated particle
+simulations~\cite{green2010,poschel2005}, yet most target high-end datacenter
+GPUs. Optimizing for \emph{resource-constrained} Maxwell-class hardware (5
+Streaming Multiprocessors, 48\,KB shared memory, 64\,K registers per SM)
+introduces additional challenges: every register counts, shared-memory budgets
+are tight, and kernel launch overhead is a measurable fraction of frame time.
+
+\subsection{The System}
+
+This paper presents \textbf{Angry Santa}, a real-time DEM snowball-avalanche
+simulator implemented in CUDA and benchmarked on two Maxwell-class devices: a
+laptop NVIDIA GTX~960M (SM~5.0) and an NVIDIA Jetson~Nano (SM~5.3). The main
+components are:
+
+\begin{enumerate}
+  \item A \textbf{three-tier particle architecture} (static snowpack, dynamic
+        shell, rigid-body core) with a probabilistic sigmoid-based capture model
+        that converts snowpack particles into shell particles as the snowball
+        rolls.
+  \item A \textbf{multi-stream GPU pipeline} with fork/join synchronization
+        and an \textbf{adaptive kernel-fusion strategy} that switches between a
+        grid-based $O(N \cdot k)$ collision path and a single mega-fused
+        $O(N^2)$ kernel depending on the active particle count.
+  \item A comprehensive set of \textbf{architecture-aware optimizations}
+        --- warp-cooperative shared-memory tiling, lock-free atomic capture,
+        zero-spill register allocation, gated event recording, sorted-snowpack
+        binary-search range limiting --- each analysed with occupancy and
+        bandwidth trade-offs specific to Maxwell.
+  \item \textbf{Scalar (SISD) and SIMD\,+\,OpenMP CPU baselines} that share
+        the same physics pipeline, enabling direct speedup measurements.
+\end{enumerate}
+
+\subsection{Paper Organisation}
+
+Section~\ref{sec:physics} describes the DEM physics model, terrain geometry,
+and capture algorithm. Section~\ref{sec:architecture} details the three-tier
+data architecture and per-frame data flow. Section~\ref{sec:pipeline} presents
+the dual-path GPU pipeline. Section~\ref{sec:optimizations} is the core of the
+paper, covering all GPU optimizations with quantitative analysis.
+Section~\ref{sec:cpu} summarises the CPU reference implementations.
+Section~\ref{sec:results} reports experimental results, and
+Section~\ref{sec:conclusion} concludes.

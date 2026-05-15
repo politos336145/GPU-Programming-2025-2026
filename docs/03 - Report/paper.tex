@@ -1,0 +1,94 @@
+% !TEX root = paper.tex
+% !TEX program = pdflatex + bibtex
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage{hyperref}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{titlesec}
+
+\titleformat{\section}{\normalfont\Large\centering}{\thesection}{1em}{}
+
+% CUDA listing style
+\lstdefinestyle{cuda}{
+  language=C++,
+  basicstyle=\ttfamily\scriptsize,
+  keywordstyle=\color{blue}\bfseries,
+  commentstyle=\color{green!50!black}\itshape,
+  stringstyle=\color{red!70!black},
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  numbersep=5pt,
+  frame=single,
+  breaklines=true,
+  captionpos=b,
+  morekeywords={__global__,__device__,__shared__,__constant__,
+                __syncthreads,__syncwarp,atomicAdd,__ldg,
+                __launch_bounds__,blockIdx,blockDim,threadIdx,
+                gridDim,float3,int3,uint32_t,cudaStream_t},
+  tabsize=2
+}
+\lstset{style=cuda}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{GPU-Accelerated Discrete Element Method (DEM) Simulation of a Snowball Avalanche Dynamics on NVIDIA Maxwell}
+
+\author{
+\IEEEauthorblockN{Maurizio Grisotto}
+\IEEEauthorblockA{\textit{Politecnico di Torino}\\
+Turin, Italy 2026\\
+s336145@studenti.polito.it}
+}
+
+\maketitle
+
+\begin{abstract}
+We present a real-time simulation of a growing snowball rolling down an inclined slope, capturing static snowpack particles via a Discrete Element Method (DEM)-inspired contact adhesion model as a potential component of a real-time game graphics engine.
+This paper investigates the concepts covered in the “GPU Programming” course through the implementation of a snowball simulation with 3 different applications: CPU Naïve, CPU-Optimized, and GPU.
+Both the algorithmic/performance aspects and dynamic Vulkan rendering (GPU version only) were addressed.
+A theoretical analysis of the multi-GPU extension scenario is also provided.
+The simulation is implemented entirely in CUDA targeting NVIDIA Maxwell GPUs (SM~5.0/5.3) and features a multi-stream pipeline with adaptive kernel fusion, warp-cooperative, shared-memory tiling, lock-free atomic capture, spatial hashing with CUB radix sort, and zero-spill register allocation across all kernels.
+We detail each optimization with quantitative analysis of occupancy, memory bandwidth, and launch overhead trade-offs.
+The GPU implementation is benchmarked against scalar (SISD) and SSE/NEON~+~OpenMP (SIMD) CPU baselines on a laptop GTX~960M and a Jetson~Nano, demonstrating the effectiveness of architecture-aware CUDA programming on resource-constrained Maxwell hardware.
+\end{abstract}
+
+\begin{IEEEkeywords}
+CUDA, GPU programming, Discrete Element Method, particle simulation, Maxwell architecture, shared memory tiling, spatial hashing, kernel fusion, occupancy tuning
+\end{IEEEkeywords}
+
+\input{sections/introduction}
+\input{sections/physics_model}
+\input{sections/architecture}
+\input{sections/gpu_pipeline}
+\input{sections/gpu_optimizations}
+\input{sections/cpu_implementations}
+\input{sections/results}
+\input{sections/conclusion}
+
+\section*{Project Code}
+The complete source code for \textbf{Angry Santa} is available on GitHub: \url{https://github.com/politos336145/GPU-Programming-2025-2026}
+
+\section*{Acknowledgments}
+The authors thank the GPU Programming course staff at Politecnico di Torino for guidance and access to the Jetson Nano development kits.
+
+\nocite{cuda_programming_guide,cuda_best_practices,cuda_toolkit,nsight_tools,cub_library,vulkan_api,dear_imgui}
+
+\bibliographystyle{IEEEtran}
+\bibliography{refs}
+
+\end{document}

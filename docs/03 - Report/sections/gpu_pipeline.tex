@@ -1,0 +1,76 @@
+% !TEX root = ../paper.tex
+\section{GPU Pipeline}
+\label{sec:pipeline}
+
+The GPU implementation provides two execution paths selected at runtime based
+on the current shell particle count $N$. Both paths share the capture stage and
+the host-side core update; they differ in how shell physics is dispatched.
+
+\subsection{Large-$N$ Path ($N > 2048$)}
+\label{sec:large_n}
+
+Seven stages execute on two CUDA streams with fork/join synchronisation via
+lightweight events (\texttt{cudaEventDisableTiming}):
+
+\begin{table}[H]
+  \caption{Large-$N$ GPU pipeline stages.}
+  \label{tab:pipeline_large}
+  \centering
+  \scriptsize
+  \begin{tabular}{@{}clccc@{}}
+    \toprule
+    \textbf{\#} & \textbf{Stage} & \textbf{Kernel} & \textbf{Stream} & \textbf{Block} \\
+    \midrule
+    1 & Capture         & \texttt{captureFromSnowpack}  & sim  & 256 \\
+    2 & Core update     & host code                     & ---  & --- \\
+    3 & Forces+Tether   & \texttt{forceTether}          & sim  & 256 \\
+    4 & Grid build      & hash$\to$sort$\to$ranges      & grid & 256 \\
+    5 & Collision       & \texttt{neighborCollision}    & sim  & 512 \\
+    6 & Integrate+Ground& \texttt{integrateGround}      & sim  & 256 \\
+    7 & Core RB         & host code                     & ---  & --- \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Stages 3 (forces\,+\,tether) and 4 (grid build) execute \textbf{concurrently}
+on \texttt{simStream} and \texttt{gridStream}, respectively. The collision
+kernel (stage~5) waits for both via \texttt{cudaStreamWaitEvent} on
+\texttt{evGridDone}. Stream synchronisation events use
+\texttt{cudaEventDisableTiming} to eliminate timing overhead (Section~\ref{sec:streams}).
+
+\subsection{Small-$N$ Path ($N \leq 2048$)}
+\label{sec:small_n}
+
+When the shell count is small, the overhead of the grid build (5--8 GPU
+commands: clear + hash + CUB sort + cell ranges) exceeds the computational
+benefit. A single \textbf{mega-fused kernel} (\texttt{shellPhysicsFused})
+replaces stages 3--6, reducing GPU commands per frame from $\sim$10 to
+\textbf{1} and keeping all intermediate forces in registers
+(Section~\ref{sec:mega_fused}).
+
+\subsection{Block Sizes and \texttt{\_\_launch\_bounds\_\_}}
+\label{sec:block_sizes}
+
+Block sizes are chosen to balance \textbf{SM coverage} (all SMs receive at
+least one block) against per-block resource consumption. With $N = 4{,}000$ and
+5~SMs on the GTX~960M, a block of 1024 yields only $\lceil4000/1024\rceil = 4$
+blocks, leaving 1~SM idle (20\% wasted). A block of 256 yields 16~blocks,
+ensuring full coverage.
+
+The \texttt{neighborCollisionKernel} uses block size 512 dictated by the
+warp-cooperative tile layout ($\text{MAX\_WARPS} = 16 = 512/32$). All other
+physics kernels use 256. Each kernel is annotated with
+\texttt{\_\_launch\_bounds\_\_(maxThreads, minBlocks)} to guide the register
+allocator (Table~\ref{tab:occupancy}).
+
+\subsection{Adaptive Path Selection}
+\label{sec:adaptive_path}
+
+The $N = 2048$ threshold is chosen empirically: below this value, the
+mega-fused kernel's reduced command overhead ($\sim$100--150\,$\mu$s) outweighs
+the cost of brute-force $O(N^2)$ collision detection. Above 2048, the grid-based
+$O(N \cdot k)$ path becomes more efficient despite the additional GPU commands.
+At typical steady-state conditions ($N \approx 4{,}000$ particles), the grid path
+executes $\sim$3--4 neighbours per particle, yielding $\sim$16{,}000 pair
+evaluations compared to $\sim 16\text{M}$ in brute-force --- a $1000\times$
+reduction that justifies the grid-build overhead.

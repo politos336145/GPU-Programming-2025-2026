@@ -1,0 +1,67 @@
+% !TEX root = ../paper.tex
+\section{CPU Reference Implementations}
+\label{sec:cpu}
+
+Two CPU builds mirror the GPU physics pipeline, enabling direct speedup
+measurements against the same simulation logic. No rendering capabilities are included in these builds.
+
+\subsection{SISD Baseline}
+
+The scalar build (\texttt{AngrySanta\_SISD}) is compiled with all compiler
+optimisations disabled (\texttt{-O0}, \texttt{/Od}), no inlining, no
+auto-vectorisation, and no loop unrolling. It serves as a strict performance
+floor for measuring both GPU and SIMD speedups. The simulation loop in
+\texttt{simulation\_CPU.cpp} executes the same pipeline: capture $\to$
+forces\,+\,tether $\to$ grid $\to$ collision $\to$ integrate\,+\,ground $\to$
+core update.
+
+\subsection{SIMD + OpenMP}
+
+The optimized build (\texttt{AngrySanta\_SIMD}) uses SSE2 intrinsics on x86-64
+and NEON intrinsics on ARM64, plus the OpenMP directives for multi-threading.
+The SIMD implementation is portable across both platforms, with conditional
+compilation to include the appropriate headers and define platform-specific macros:
+
+\begin{lstlisting}
+#if defined(__x86_64__) || defined(_M_X64)
+  #include <immintrin.h>   // SSE / SSE2
+  #define CPU_SIMD_X86 1
+#elif defined(__aarch64__)
+  #include <arm_neon.h>    // NEON
+  #define CPU_SIMD_NEON 1
+#endif
+\end{lstlisting}
+
+Each physics function processes 4 particles per iteration (128-bit SIMD lanes)
+with a scalar remainder loop for the $N \bmod 4$ tail. SoA arrays are allocated
+with 16-byte alignment (via platform-specific \texttt{\_aligned\_malloc} /
+\texttt{aligned\_alloc} macros) to enable aligned packed loads
+(\texttt{\_mm\_load\_ps} / \texttt{vld1q\_f32}).
+
+\begin{lstlisting}
+// In SIMD builds, allocate 16-byte aligned memory for packed loads/stores.
+#ifdef SIMD
+  #ifdef _MSC_VER
+    #define ALLOC(bytes)  _aligned_malloc((bytes), 16)
+    #define FREE(ptr)     _aligned_free(ptr)
+  #else
+    static inline void* simd_alloc_impl_(size_t bytes) {
+      size_t aligned = (bytes + 15u) & ~(size_t)15u;
+      return aligned_alloc(16, aligned > 0 ? aligned : 16);
+    }
+    #define ALLOC(bytes)  simd_alloc_impl_(bytes)
+    #define FREE(ptr)     free(ptr)
+  #endif
+#else
+  #define ALLOC(bytes)  malloc(bytes)
+  #define FREE(ptr)     free(ptr)
+#endif
+\end{lstlisting}
+
+When compiled with \texttt{-DHAS\_OPENMP}, data-parallel loops use
+\texttt{\#pragma omp parallel for schedule(static)} for multi-threaded
+distribution across CPU cores, applying to initialisation, force computation,
+and integration. The only algorithmic difference is ~no spatial hashing --- 
+collision detection remains $O(N^2)$ brute-force. This ensures that GPU speedup 
+measurements isolate parallelization and architectural advantage rather than 
+algorithmic improvements, and allows direct quantification of SIMD vs.~GPU performance.

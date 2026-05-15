@@ -1,0 +1,413 @@
+% !TEX root = MultipleGPU.tex
+% !TEX program = pdflatex
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{url}
+\usepackage{hyperref}
+\usepackage{titlesec}
+
+\titleformat{\section}{\normalfont\Large\centering}{\thesection}{1em}{}
+
+% CUDA / C++ listing style (matches main report)
+\lstdefinestyle{cuda}{
+  language=C++,
+  basicstyle=\ttfamily\scriptsize,
+  keywordstyle=\color{blue}\bfseries,
+  commentstyle=\color{green!50!black}\itshape,
+  stringstyle=\color{red!70!black},
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  numbersep=5pt,
+  frame=single,
+  breaklines=true,
+  captionpos=b,
+  morekeywords={__global__,__device__,__shared__,__constant__,
+                __syncthreads,__syncwarp,atomicAdd,__ldg,
+                __launch_bounds__,blockIdx,blockDim,threadIdx,
+                gridDim,float3,int3,uint32_t,cudaStream_t,
+                cudaSetDevice,cudaDeviceEnablePeerAccess,
+                cudaMemcpyPeerAsync,cudaMemcpyAsync,
+                cudaEventRecord,cudaEventSynchronize,
+                cudaStreamWaitEvent},
+  tabsize=2
+}
+\lstset{style=cuda}
+
+% ============================================================
+\begin{document}
+
+\title{GPU-Accelerated Discrete Element Method (DEM) Simulation of a Snowball Avalanche Dynamics on NVIDIA Maxwell\\[0.5em]
+\LARGE Attachment 1: Multi-GPU Extension Strategy}
+
+\author{
+\IEEEauthorblockN{Maurizio Grisotto}
+\IEEEauthorblockA{\textit{Politecnico di Torino}\\
+Turin, Italy 2026\\
+s336145@studenti.polito.it}
+}
+
+\maketitle
+
+\begin{abstract}
+This attachment presents a theoretical analysis of extending the Angry Santa
+DEM snowball simulation to multiple GPUs. The analysis covers pipeline communication 
+requirements, 1D domain decomposition along the slope axis, halo exchange sizing, 
+a per-frame multi-stream pipeline, comparison with index-based partitioning, 
+concrete code change maps, and an optional CUDA-aware MPI path for multi-node clusters.
+\end{abstract}
+
+\begin{IEEEkeywords}
+multi-GPU, domain decomposition, halo exchange, CUDA peer-to-peer,
+\texttt{cudaMemcpyPeerAsync}, MPI, DEM, particle simulation
+\end{IEEEkeywords}
+
+% ============================================================
+\section{Pipeline Analysis}
+\label{sec:pipeline}
+
+The current single-GPU pipeline executes five main stages per frame across
+two CUDA streams. 
+
+\begin{table*}[t]
+  \caption{Inter-GPU communication per pipeline stage}
+  \label{tab:comm}
+  \centering
+  \begin{tabular}{clp{10cm}}
+    \toprule
+    \# & Kernel / Stage & Communication \\
+    \midrule
+    1 & \texttt{captureFromSnowpackKernel}
+      & \textbf{Partial.} Snowpack is read-only; replicated on each GPU
+        ($\sim$2.7\,MB for 100\,k particles: 6 float + 1 int = 28\,B).
+        Captured mass must be \emph{reduced} across all GPUs before
+        \texttt{updateCoreMassAfterCapture}. \\[2pt]
+    2 & \texttt{forceTetherKernel}
+      & \textbf{None.} Per-particle: gravity, damping, tether. \\[2pt]
+    3 & Grid build (hash + sort)
+      & \textbf{None.} Each GPU builds its own local grid. \\[2pt]
+    4 & \texttt{neighborCollisionKernel}
+      & \textbf{Yes.} Particles near subdomain boundaries require
+        \emph{halo} data from the adjacent GPU
+        (Section~\ref{sec:halo}). \\[2pt]
+    5 & \texttt{integrateGroundKernel}
+      & \textbf{None.} Per-particle semi-implicit Euler integration. \\
+    \bottomrule
+  \end{tabular}
+\end{table*}
+
+Inter-GPU communication is required at exactly two points per frame: the
+halo exchange before \texttt{neighborCollisionKernel}, and a small
+captured-mass reduce after \texttt{captureFromSnowpackKernel}. Both are
+cheap and maskable behind compute. \\
+Each GPU will operate with 3 CUDA streams:
+
+\begin{itemize}
+  \item \texttt{simStream}: main physics pipeline (existing)
+  \item \texttt{gridStream}: grid construction (existing, concurrent with
+        \texttt{forceTetherKernel})
+  \item \texttt{commStream} (\emph{new CUDA stream}): pack halo $\to$
+        \texttt{cudaMemcpyPeerAsync} $\to$ unpack halo
+\end{itemize}
+
+The join before \texttt{neighborCollisionKernel} requires \texttt{simStream}
+to wait on both \texttt{evGridDone} (existing) and \texttt{evHaloDone} (new).
+
+% ============================================================
+\section{1D Domain Decomposition}
+\label{sec:decomp}
+
+\subsection{Geometry}
+
+The ball rolls along the slope in the \textbf{s} direction (downhill). Shell
+particles cluster around the ball with radius $r_\text{ball} + r_\text{tether}$;
+the spatial distribution is essentially 1D along~$s$. The proposed
+partitioning divides the $s$ axis into $G$ slices (one per GPU) with
+boundaries $s_0 < s_1 < \cdots < s_G$. GPU~$g$ owns all particles with
+$s_g \le \text{posS} < s_{g+1}$. The halo region for GPU~$g$ consists of particles in the adjacent
+slices $[s_{g-1} - h, s_g)$ and $[s_{g+1}, s_{g+1} + h)$, where $h$ is the halo width (Section~\ref{sec:halo}).
+
+\subsection{Halo Exchange}
+\label{sec:halo}
+
+The halo width must cover the maximum interaction radius of
+\texttt{neighborCollisionKernel}. The effective cutoff is $\max(\texttt{cohesionRadius},\,2\cdot
+\texttt{particleRadius})$, so the required halo width is:
+\[
+  h = \max\!\bigl(\texttt{cellSize},\;\texttt{cohesionRadius}\bigr)
+\]
+
+The halo width must be computed at runtime from the actual
+parameter values, not hardcoded to \texttt{cellSize}.
+
+\subsection{Snowpack Replication and Ball Broadcast}
+
+The snowpack is replicated on each GPU; the only post-capture 
+communication is reducing \texttt{h\_captureCount} and \texttt{h\_captureMass} across GPUs.
+The \texttt{SnowballState} struct ($\approx 60$\,B) is broadcast to all
+GPUs via \texttt{cudaMemcpyAsync} (host$\to$device) at the start of each
+frame at negligible cost.
+
+% ============================================================
+\section{Comparison with Index-Based Partitioning}
+\label{sec:index}
+
+The simpler alternative is to assign to each GPU~$g$ the particles with index
+$i \bmod G = g$ (round-robin), or contiguous blocks
+$[gN/G, (g+1)N/G)$.
+With index-based partitioning, particles on the same GPU are not spatially
+localised: a particle's neighbors in the hash grid can reside on any other
+GPU. This has two severe consequences:
+\begin{itemize}
+  \item \texttt{O(N)} communication: each GPU must send/receive all positions and velocities
+        to/from every other GPU, because it cannot know in advance which particles
+        will be neighbors in the spatial grid.
+  \item Duplicated grid: each GPU must build a grid over all particles (not only its own),
+        because the neighbor search requires global positions. This eliminates the
+        advantage of partitioning the grid build.
+\end{itemize}
+
+Index-based partitioning requires each GPU to exchange \emph{all} positions
+with every other GPU and to build a grid over \emph{all} particles. Domain 
+decomposition exploits the strong spatial coherence of shell particles around the ball.
+
+% ============================================================
+\section{Code Change Map}
+\label{sec:code}
+
+\subsection{New Data Structure}
+
+\begin{lstlisting}[caption={Per-GPU state struct}]
+struct PerGPUData {
+    int            deviceId;
+    ParticleSystem shell;     // N/G particles + halo space
+    GridData       grid;      // sized for local + halo
+    Snowpack       snowpack;  // replicated read-only copy
+    cudaStream_t   simStream, gridStream;
+    cudaStream_t   commStream;  // NEW
+    cudaEvent_t    evFork, evGridDone;
+    cudaEvent_t    evHaloDone;  // NEW
+    // Halo buffers: pos(xyz) + vel(xyz) + mass + radius + state
+    char  *haloSendBuf, *haloRecvBuf;
+    int    haloSendCount, haloRecvCount;
+    // Capture accumulators (pinned host + device)
+    int   *d_captureCount; float *d_captureMass;
+    int   *h_captureCount; float *h_captureMass;
+};
+\end{lstlisting}
+
+\subsection{New Kernels}
+
+\begin{itemize}
+  \item \texttt{packHaloKernel}: scans particles with
+        $|\text{posS} - s_\text{border}| < h$ and packs them into a
+        contiguous buffer (8 float + 1 int per particle).
+  \item \texttt{unpackHaloKernel}: appends received halo particles at
+        indices $[\texttt{shellN\_local},\,\texttt{shellN\_local} +
+        \texttt{haloRecvCount})$ of the local \texttt{ParticleSystem}, so
+        \texttt{neighborCollisionKernel} finds them in the spatial grid.
+\end{itemize}
+
+\subsection{Grid Sizing for Halo Particles}
+
+\begin{lstlisting}
+// allocateGrid signature: (GridData&, int capacity, const SimParams&)
+int maxHaloSize = (int)(shellLocalCap * 0.10f); // 10% headroom
+allocateGrid(grid, shellLocalCap + maxHaloSize, params);
+
+// Halo buffer size per border:
+size_t haloBytes = maxHaloParticles *
+    (8 * sizeof(float) + sizeof(int));
+// 8 floats: posX/Y/Z, velX/Y/Z, mass, radius
+// 1 int:    state  (to skip INACTIVE ghosts in collision kernel)
+// attachLocalX/Y/Z NOT included: halo particles are read-only ghosts
+\end{lstlisting}
+
+\subsection{Particle Migration}
+
+Occasionally a particle crosses the subdomain boundary (tethered to the ball
+as it moves). Migration must transfer \textbf{all 16 SoA arrays} of
+\texttt{ParticleSystem}:
+
+\begin{lstlisting}[numbers=none]
+posX, posY, posZ,            // 3 float
+velX, velY, velZ,            // 3 float
+forceX, forceY, forceZ,      // 3 float
+mass, radius, wetness,       // 3 float
+state,                       // 1 ShellParticleState (int)
+attachLocalX, attachLocalY, attachLocalZ  // 3 float -- CRITICAL
+\end{lstlisting}
+
+The \texttt{attachLocal*} arrays hold body-frame tether anchors computed
+once at capture via \texttt{quatInvRotateVec}. They are \textbf{not
+reconstructible} from world-space state; omitting them from migration would
+cause tether forces to point in the wrong direction.
+
+\subsection{Modifications to \texttt{copyParamsToGPU}}
+
+\begin{lstlisting}
+// Must be called once per device at startup
+for (int g = 0; g < numGPUs; g++) {
+    cudaSetDevice(g);
+    copyParamsToGPU(params); // writes d_params __constant__ on device g
+}
+\end{lstlisting}
+
+\subsection{P2P Access Initialization}
+
+\texttt{cudaDeviceEnablePeerAccess} operates from the \emph{current} device
+context; both directions must be enabled from the correct device:
+
+\begin{lstlisting}
+for (int g = 0; g < numGPUs - 1; g++) {
+    cudaSetDevice(g);
+    cudaDeviceEnablePeerAccess(g + 1, 0); // g -> g+1
+    cudaSetDevice(g + 1);
+    cudaDeviceEnablePeerAccess(g, 0);     // g+1 -> g
+}
+\end{lstlisting}
+
+If P2P is unavailable (PCIe without IOMMU bridge), the fallback is to
+transit through a pinned host staging buffer (2$\times$ latency, functionally
+identical).
+
+\subsection{Small-N Fused Path}
+
+The single-GPU code switches to \texttt{shellPhysicsFusedKernel} when
+$\texttt{shellN} \le 2048$. In multi-GPU, the per-GPU count
+$\texttt{shellN}/G$ may fall below this threshold even at moderate total~$N$.
+The dispatcher must check the \textbf{local} particle count on each GPU and
+select the fused path independently per device.
+
+% ============================================================
+\section{CUDA-Aware MPI for Clusters}
+\label{sec:mpi}
+
+\subsection{Motivation}
+
+The peer-to-peer mechanism described in Section~\ref{sec:code}
+(\texttt{cudaMemcpyPeerAsync}) only works between GPUs connected to the
+\emph{same} CUDA driver instance, i.e.\ on a single physical node.
+Scaling to a multi-node cluster (16, 32, 64+ GPUs) requires
+\textbf{MPI} (Message Passing Interface) to transfer data across the network.
+
+\subsection{Classic MPI vs.\ CUDA-Aware MPI}
+
+With \emph{classic} MPI, transferring a GPU buffer to another node requires
+four explicit steps:
+\begin{enumerate}
+  \item \texttt{cudaMemcpy} D$\to$H: copy halo from GPU to host pinned buffer;
+  \item \texttt{MPI\_Isend}: send host buffer over the network;
+  \item \texttt{MPI\_Irecv}: receive into host buffer on the remote node;
+  \item \texttt{cudaMemcpy} H$\to$D: copy received data from host to GPU.
+\end{enumerate}
+Steps 1 and 4 add two full PCIe traversals per transfer, doubling effective
+latency and consuming host CPU time for staging.
+
+\emph{CUDA-aware MPI} (e.g.\ OpenMPI~$\ge$1.7 with \texttt{--with-cuda}, or
+MVAPICH2-GDR) recognises device pointers passed directly to
+\texttt{MPI\_Isend}/\texttt{MPI\_Irecv} and, when \textbf{GPUDirect RDMA}
+is available (NVLink or RDMA-capable NIC such as Mellanox InfiniBand), it
+transfers data directly from GPU to network card without involving the host
+CPU or host RAM at all.
+
+\begin{table}[ht]
+  \caption{Classic MPI vs.\ CUDA-aware MPI for halo exchange}
+  \label{tab:mpi}
+  \centering
+  \begin{tabular}{lcc}
+    \toprule
+    & Classic MPI & CUDA-Aware MPI \\
+    \midrule
+    Data path     & GPU$\to$CPU$\to$NIC$\to$CPU$\to$GPU & GPU$\to$NIC$\to$GPU \\
+    Extra copies  & 2 (D$\to$H + H$\to$D) & 0 \\
+    Host staging buffer & required & not required \\
+    Latency       & $\sim$2$\times$ higher & baseline \\
+    Code change   & host copy + MPI call & MPI call only \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Implementation}
+
+With CUDA-aware MPI, device pointers are passed directly to the MPI
+primitives. The halo pack/unpack kernels are unchanged; only the transfer
+call differs:
+
+\begin{lstlisting}[caption={Halo exchange with CUDA-aware MPI (non-blocking)}]
+launchPackHalo(gpuData, commStream); // fill haloSendBuf on GPU
+
+// Device pointers passed directly -- no host staging copy
+MPI_Isend(gpuData.haloSendBuf, haloBytes, MPI_BYTE,
+          neighborRank, tag, MPI_COMM_WORLD, &sendReq);
+MPI_Irecv(gpuData.haloRecvBuf, haloBytes, MPI_BYTE,
+          neighborRank, tag, MPI_COMM_WORLD, &recvReq);
+
+// Overlap network transfer with forceTetherKernel on simStream,
+// then wait before neighborCollisionKernel
+MPI_Waitall(2, reqs, statuses);
+launchUnpackHalo(gpuData, commStream);
+\end{lstlisting}
+
+The captured-mass reduce across all nodes maps to a single MPI collective,
+avoiding any manual reduction loop:
+
+\begin{lstlisting}[caption={Captured-mass reduce with MPI}]
+// Each rank holds its local accumulated mass after captureKernel
+MPI_Allreduce(&localCaptureMass, &totalCaptureMass,
+              1, MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD);
+// totalCaptureMass now available on all ranks for ball update
+updateCoreMassAfterCapture(ball, totalCaptureCount,
+                           totalCaptureMass, snowDensity);
+\end{lstlisting}
+
+\subsection{Deployment Considerations}
+
+If GPUDirect RDMA is unavailable, CUDA-aware MPI falls back transparently to
+the classic D$\to$H$\to$network$\to$H$\to$D path, so the code remains
+correct and portable across all cluster configurations.
+
+% ============================================================
+\section{Conclusions}
+\label{sec:conclusions}
+
+\begin{enumerate}
+  \item \textbf{Highly favorable for multi-GPU}: \texttt{neighborCollisionKernel}
+        is both the heaviest stage and the only one requiring significant
+        communication, giving a comm/compute ratio of $< 0.1\%$.
+
+  \item \textbf{1D domain decomposition along $s$} is $\sim$25$\times$ more
+        communication-efficient than index-based partitioning, exploiting the
+        strong spatial coherence of shell particles around the ball.
+
+  \item \textbf{Halo width} must be $\max(\texttt{cellSize},
+        \texttt{cohesionRadius})$, computed at runtime to remain correct under
+        all CLI configurations.
+
+  \item \textbf{Migration must transfer all 16 SoA arrays}, especially
+        \texttt{attachLocal*} (body-frame tether anchors, computed once at
+        capture and not reconstructible from world-space state).
+
+  \item \textbf{Expected scaling}: nearly linear up to 4--8~GPUs;
+        $\sim$3.8$\times$ speedup at 4~GPUs with $N = 200$\,k active shell
+        particles.
+
+  \item \textbf{Small-N fused path}: the \texttt{shellPhysicsFusedKernel}
+        threshold must be evaluated independently per device in multi-GPU,
+        since the local $N/G$ may drop below 2048 even when total $N$ is
+        large.
+
+  \item \textbf{Minimal code impact}: changes are confined to \texttt{main.cu}
+        (multi-device loop + capture reduce), two new lightweight kernels
+        (\texttt{packHalo}, \texttt{unpackHalo}), one additional stream per
+        GPU, and grid-sizing adjustments. The existing physics kernels require
+        \textbf{no modification}.
+\end{enumerate}
+
+\end{document}

@@ -1,0 +1,125 @@
+# ============================================================================
+# .gitignore for Angry Santa CUDA Project
+# ============================================================================
+
+# Latex auxiliary files
+*.synctex.gz
+*.aux
+*.log
+*.out
+*.toc
+*.blg
+
+# Compiled executables
+AngrySanta
+*.exe
+*.out
+*.app
+
+# Object files
+*.o
+*.obj
+*.ko
+*.elf
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# CUDA compilation artifacts
+*.fatbin
+*.cubin
+*.ptx
+*.i
+*.ii
+*.gpu
+*.su
+*.idb
+*.pdb
+
+# Profiling and debugging
+*.nvvp
+*.qdrep
+*.qdstrm
+*.sqlite
+*.sqlite-journal
+profile.*
+nsys-rep-*
+ncu-rep-*
+*.nsys-rep
+*.ncu-rep
+
+# Logs and data
+*.log
+*.dat
+
+# IDE and editor files
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Build directories
+build/
+bin/
+obj/
+out/
+
+# Backup files
+*.bak
+*.backup
+*_backup
+
+# Temporary files
+*.tmp
+*.temp
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+
+# Make
+*.d
+.depend
+
+# OS-specific
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+[Dd]esktop.ini
+ehthumbs.db
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msm
+*.msp
+*.lnk
+
+# Keep these files
+!.gitignore
+!README.md
+!Makefile
+!*.cu
+!*.cuh
+!*.h
+!*.bat
+!*.ps1
+!*.md
+!*.png
+!*.jpg

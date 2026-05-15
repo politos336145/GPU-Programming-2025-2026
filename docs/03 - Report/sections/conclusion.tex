@@ -1,0 +1,48 @@
+% !TEX root = ../paper.tex
+\section{Conclusion}
+\label{sec:conclusion}
+
+We presented a GPU-accelerated Discrete Element Method simulation of a
+growing snowball rolling down an inclined slope, targeting NVIDIA Maxwell
+hardware (GTX~960M and Jetson~Nano). The key takeaways are:
+
+\begin{enumerate}
+  \item \textbf{Architecture-aware optimisation matters.} On resource-constrained
+        Maxwell GPUs, each register, each kilobyte of shared memory, and each
+        kernel launch has measurable impact. The warp-cooperative tiling design,
+        zero-spill register allocation, and gated event recording are all
+        responses to specific Maxwell bottlenecks (no hardware FP32 atomics,
+        48\,KB shared memory limit, high per-command driver overhead).
+
+  \item \textbf{Adaptive fusion pays off.} The dual-path pipeline
+        (mega-fused for $N \leq 2048$, grid-based for $N > 2048$) eliminates
+        launch overhead during the initial growth phase while seamlessly
+        transitioning to the scalable $O(N \cdot k)$ path as the particle
+        count increases.
+
+  \item \textbf{Zero spill trumps 100\% occupancy.} Accepting 62.5--75\%
+        occupancy in exchange for keeping all variables in physical registers
+        avoids DRAM-backed spill costs ($\sim$300 cycles per access) and
+        yields better real-world performance than forcing higher occupancy
+        through aggressive register limiting.
+
+  \end{enumerate}
+
+\subsection{Future Work}
+
+Several extensions could be developed:
+
+\begin{itemize}
+  \item \textbf{Multi-GPU / domain decomposition}: partitioning the spatial
+        grid across multiple GPUs via halo exchange for simulations with 
+        very large shell particle counts (refer to Attachment 1).
+  \item \textbf{Persistent-contact DEM}: tracking tangential spring history
+        across frames for more accurate friction modelling, at the cost of
+        additional per-pair state.
+  \item \textbf{Volta+ optimisations}: on SM~7.0+, hardware
+        \texttt{atomicAdd(float)} eliminates CAS loops, potentially making
+        symmetric collision viable again; cooperative groups could replace
+        warp-level synchronisation.
+  \item \textbf{3D terrain}: replacing the infinite plane with a height-map
+        or mesh-based terrain for realistic mountain geometry.
+\end{itemize}
