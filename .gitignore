@@ -47,13 +47,8 @@ AngrySanta
 *.nvvp
 *.qdrep
 *.qdstrm
-*.sqlite
 *.sqlite-journal
 profile.*
-nsys-rep-*
-ncu-rep-*
-*.nsys-rep
-*.ncu-rep
 
 # Logs and data
 *.log
