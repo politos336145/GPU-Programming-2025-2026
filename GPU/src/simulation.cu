@@ -190,7 +190,6 @@ static constexpr int MAX_WARPS = 16;  // 512 / 32
  * @param hashTableMask  Mask for modular hashing into compact hash table.
  * @param shellN         Number of shell particles.
  */
-// TODO da capire bene cosa fa
 __global__ __launch_bounds__(512, 3)
 void neighborCollisionKernel(
     const float *__restrict__ posX, const float *__restrict__ posY, const float *__restrict__ posZ,
@@ -450,7 +449,6 @@ void launchNeighborCollision(ParticleSystem &ps, const GridData &grid, int shell
  * @note This kernel is not spatially coherent and has O(N²) complexity, so it should only be used for small N (≤ BF_COLLISION_THRESHOLD).
  *       For larger N, use neighborCollisionKernel with the spatial grid for O(N) complexity and better memory access patterns. 
  */
-// TODO da capire bene cosa fa
 __global__ __launch_bounds__(256, 5)
 void bruteForceCollisionKernel(
     const float *__restrict__ posX, const float *__restrict__ posY, const float *__restrict__ posZ,
@@ -460,7 +458,6 @@ void bruteForceCollisionKernel(
     const ShellParticleState *__restrict__ state,
     int shellN)
 {
-  // TODO nessuna condizione di uscita anticipata?
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
   bool active = (tid < shellN) && (__ldg(reinterpret_cast<const int*>(&state[tid])) == ACTIVE);
 
